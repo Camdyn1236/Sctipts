@@ -1,0 +1,276 @@
+--Made by rouxhaver
+--Network Library by 4eyes
+--Smooth Auto-Assemble Formation Edition (Forward Gap)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+if not getgenv().Network then
+	getgenv().Network = {
+		BaseParts = {};
+		FakeConnections = {};
+		Connections = {};
+		Output = {
+			Enabled = true;
+			Prefix = "[NETWORK] ";
+			Send = function(Type,Output,BypassOutput)
+				if typeof(Type) == "function" and (Type == print or Type == warn or Type == error) and typeof(Output) == "string" and (typeof(BypassOutput) == "nil" or typeof(BypassOutput) == "boolean") then
+					if Network["Output"].Enabled == true or BypassOutput == true then
+						Type(Network["Output"].Prefix..Output);
+					end;
+				elseif Network["Output"].Enabled == true then
+					error(Network["Output"].Prefix.."Output Send Error : Invalid syntax.");
+				end;
+			end;
+		};
+		CharacterRelative = false;
+	}
+
+	Network["Output"].Send(print,": Loading.")
+	Network["Velocity"] = Vector3.new(14.46262424,14.46262424,14.46262424); 
+	Network["RetainPart"] = function(Part,ReturnFakePart) 
+		assert(typeof(Part) == "Instance" and Part:IsA("BasePart") and Part:IsDescendantOf(workspace),Network["Output"].Prefix.."RetainPart Error : Invalid syntax: Arg1 (Part) must be a BasePart which is a descendant of workspace.")
+		assert(typeof(ReturnFakePart) == "boolean" or typeof(ReturnFakePart) == "nil",Network["Output"].Prefix.."RetainPart Error : Invalid syntax: Arg2 (ReturnFakePart) must be a boolean or nil.")
+		if not table.find(Network["BaseParts"],Part) then
+			if Network.CharacterRelative == true then
+				local Character = LocalPlayer.Character
+				if Character and Character.PrimaryPart then
+					local Distance = (Character.PrimaryPart.Position-Part.Position).Magnitude
+					if Distance > 1000 then
+						Network["Output"].Send(warn,"RetainPart Warning : PartOwnership not applied to BasePart "..Part:GetFullName()..", as it is more than "..gethiddenproperty(LocalPlayer,"MaximumSimulationRadius").." studs away.")
+						return false
+					end
+				else
+					Network["Output"].Send(warn,"RetainPart Warning : PartOwnership not applied to BasePart "..Part:GetFullName()..", as the LocalPlayer Character's PrimaryPart does not exist.")
+					return false
+				end
+			end
+			table.insert(Network["BaseParts"],Part)
+			Part.CustomPhysicalProperties = PhysicalProperties.new(0,0,0,0,0)
+			Network["Output"].Send(print,"PartOwnership Output : PartOwnership applied to BasePart "..Part:GetFullName()..".")
+			if ReturnFakePart == true then
+				return FakePart
+			end
+		else
+			Network["Output"].Send(warn,"RetainPart Warning : PartOwnership not applied to BasePart "..Part:GetFullName()..", as it already active.")
+			return false
+		end
+	end
+
+	Network["RemovePart"] = function(Part)
+		assert(typeof(Part) == "Instance" and Part:IsA("BasePart"),Network["Output"].Prefix.."RemovePart Error : Invalid syntax: Arg1 (Part) must be a BasePart.")
+		local Index = table.find(Network["BaseParts"],Part)
+		if Index then
+			table.remove(Network["BaseParts"],Index)
+			Network["Output"].Send(print,"RemovePart Output: PartOwnership removed from BasePart "..Part:GetFullName()..".")
+		else
+			Network["Output"].Send(warn,"RemovePart Warning : BasePart "..Part:GetFullName().." not found in BaseParts table.")
+		end
+	end
+
+	Network["SuperStepper"] = Instance.new("BindableEvent")
+	for _,Event in pairs({RunService.Stepped,RunService.Heartbeat}) do
+		Event:Connect(function()
+			return Network["SuperStepper"]:Fire(Network["SuperStepper"],tick())
+		end)
+	end
+
+	Network["PartOwnership"] = {};
+	Network["PartOwnership"]["PreMethodSettings"] = {};
+	Network["PartOwnership"]["Enabled"] = false;
+	Network["PartOwnership"]["Enable"] = coroutine.create(function() 
+		if Network["PartOwnership"]["Enabled"] == false then
+			Network["PartOwnership"]["Enabled"] = true 
+			Network["PartOwnership"]["PreMethodSettings"].ReplicationFocus = LocalPlayer.ReplicationFocus
+			LocalPlayer.ReplicationFocus = workspace
+			Network["PartOwnership"]["PreMethodSettings"].SimulationRadius = gethiddenproperty(LocalPlayer,"SimulationRadius")
+			Network["PartOwnership"]["Connection"] = Network["SuperStepper"].Event:Connect(function() 
+				sethiddenproperty(LocalPlayer,"SimulationRadius",1/0)
+				for _,Part in pairs(Network["BaseParts"]) do 
+					coroutine.wrap(function()
+						if Part:IsDescendantOf(workspace) then
+							if Network.CharacterRelative == true then
+								local Character = LocalPlayer.Character;
+								if Character and Character.PrimaryPart then
+									local Distance = (Character.PrimaryPart.Position - Part.Position).Magnitude
+									if Distance > 1000 then
+										Network["Output"].Send(warn,"PartOwnership Warning : PartOwnership not applied to BasePart "..Part:GetFullName()..", as it is more than "..gethiddenproperty(LocalPlayer,"MaximumSimulationRadius").." studs away.")
+										Lost = true;
+										Network["RemovePart"](Part)
+									end
+								else
+									Network["Output"].Send(warn,"PartOwnership Warning : PartOwnership not applied to BasePart "..Part:GetFullName()..", as the LocalPlayer Character's PrimaryPart does not exist.")
+								end
+							end
+							Part.Velocity = Network["Velocity"]+Vector3.new(0,math.cos(tick()*10)/100,0)
+						else
+							Network["RemovePart"](Part)
+						end
+					end)()
+				end
+			end)
+			Network["Output"].Send(print,"PartOwnership Output : PartOwnership enabled.")
+		else
+			Network["Output"].Send(warn,"PartOwnership Output : PartOwnership already enabled.")
+		end
+	end)
+	Network["PartOwnership"]["Disable"] = coroutine.create(function()
+		if Network["PartOwnership"]["Connection"] then
+			Network["PartOwnership"]["Connection"]:Disconnect()
+			LocalPlayer.ReplicationFocus = Network["PartOwnership"]["PreMethodSettings"].ReplicationFocus
+			sethiddenproperty(LocalPlayer,"SimulationRadius",Network["PartOwnership"]["PreMethodSettings"].SimulationRadius)
+			Network["PartOwnership"]["PreMethodSettings"] = {}
+			for _,Part in pairs(Network["BaseParts"]) do
+				Network["RemovePart"](Part)
+			end
+			Network["PartOwnership"]["Enabled"] = false
+			Network["Output"].Send(print,"PartOwnership Output : PartOwnership disabled.")
+		else
+			Network["Output"].Send(warn,"PartOwnership Output : PartOwnership already disabled.")
+		end
+	end)
+	Network["Output"].Send(print,": Loaded.")
+end
+
+coroutine.resume(Network["PartOwnership"]["Enable"])
+
+local player = game:GetService("Players").LocalPlayer
+local char = player.Character
+
+local Parts_Folder = Instance.new("Folder", workspace)
+if not game:GetService("ReplicatedStorage"):FindFirstChild("01_server") then 
+    return game:GetService("TeleportService"):Teleport(17574618959, player) 
+end
+
+-- Fixed Array Format to prevent overwriting duplicate hats
+local formationData = {
+    {Name = "MeshPartAccessory", CF = CFrame.new(114.676689, 4.48686028, 46.0211716, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "InternationalFedora", CF = CFrame.new(114.672638, 4.4878006, 46.9210587, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "InternationalFedora", CF = CFrame.new(114.676689, 4.48686028, 45.1503563, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "InternationalFedora", CF = CFrame.new(114.679741, 4.5023284, 44.1808357, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "InternationalFedora", CF = CFrame.new(114.684151, 4.48651409, 47.6954994, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "InternationalFedora", CF = CFrame.new(115.600746, 4.47942305, 49.0338173, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "InternationalFedora", CF = CFrame.new(113.829887, 4.47698641, 49.0996399, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "MeshPartAccessory", CF = CFrame.new(115.615578, 4.47689342, 48.6270332, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+    {Name = "MeshPartAccessory", CF = CFrame.new(113.836708, 4.48686028, 48.5725098, 1, 0, 0, 0, 1, 0, 0, 0, 1)},
+}
+
+-- Calculate the exact center point of the formation
+local totalPosition = Vector3.new(0, 0, 0)
+for _, data in ipairs(formationData) do
+    totalPosition = totalPosition + data.CF.Position
+end
+local originalCenter = CFrame.new(totalPosition / #formationData)
+
+-- Calculate relative offsets for each block
+for _, data in ipairs(formationData) do
+    data.Offset = originalCenter:ToObjectSpace(data.CF)
+end
+
+-- Create the invisible Master Pivot that controls the whole shape
+local Master_Pivot = Instance.new("Part", Parts_Folder)
+Master_Pivot.Name = "FormationPivot"
+Master_Pivot.Size = Vector3.new(1, 1, 1)
+Master_Pivot.Transparency = 1
+Master_Pivot.CanCollide = false
+Master_Pivot.Massless = true
+Master_Pivot.Anchored = false
+
+-- Weld to the exact bottom of the HumanoidRootPart and push it FORWARD by 3 studs
+local hrp = char:WaitForChild("HumanoidRootPart", 5)
+if hrp then
+    -- X = 0 (centered), Y = -1 (bottom of torso), Z = -3 (forward medium gap)
+    Master_Pivot.CFrame = hrp.CFrame * CFrame.new(0, -1, -3)
+    
+    local weld = Instance.new("Weld")
+    weld.Name = "FormationWeld"
+    weld.Part0 = hrp
+    weld.Part1 = Master_Pivot
+    weld.C0 = CFrame.new(0, -1, -3) 
+    weld.Parent = Master_Pivot
+end
+
+local ActiveFormationParts = {}
+local removedHats = {}
+local availableFormation = {}
+
+-- Copy list to track which ones we've used
+for _, d in ipairs(formationData) do 
+    table.insert(availableFormation, d) 
+end
+
+for i, Hat in pairs(char:GetChildren()) do
+	if Hat:IsA("Accessory") and Hat:FindFirstChild("Handle") then
+        local handle = Hat.Handle
+        
+        -- Check if this hat is part of our formation list
+        local matchIndex = nil
+        for idx, formItem in ipairs(availableFormation) do
+            if formItem.Name == Hat.Name then
+                matchIndex = idx
+                break
+            end
+        end
+
+        if matchIndex then
+            local formationInfo = table.remove(availableFormation, matchIndex)
+            
+            -- Guaranteed Unmesh Logic
+            local unmeshed = false
+            for _, item in pairs(handle:GetChildren()) do
+                if item:IsA("DataModelMesh") or item:IsA("SpecialMesh") or item.Name == "Mesh" then
+                    item:Destroy()
+                    unmeshed = true
+                end
+            end
+            if unmeshed then
+                table.insert(removedHats, Hat.Name)
+            end
+
+            -- Network 
+            if handle:FindFirstChild("AccessoryWeld") then
+                handle.AccessoryWeld:Destroy()
+            end
+            Network.RetainPart(handle)
+
+            -- Store for the ultra-smooth loop
+            table.insert(ActiveFormationParts, {
+                RealHandle = handle,
+                Offset = formationInfo.Offset
+            })
+        end
+	end
+end
+
+-- Ultra-Smooth Render Loop (Heartbeat aligns exactly with physics)
+local updateConnection
+updateConnection = RunService.Heartbeat:Connect(function()
+    if not Parts_Folder or not Master_Pivot.Parent then 
+        updateConnection:Disconnect()
+        return 
+    end
+    for _, item in ipairs(ActiveFormationParts) do
+        if item.RealHandle and item.RealHandle.Parent then
+            item.RealHandle.CFrame = Master_Pivot.CFrame * item.Offset
+            -- Set velocity to 0 to prevent physics engine jittering
+            item.RealHandle.Velocity = Vector3.new(0, 0, 0)
+            item.RealHandle.RotVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+end)
+
+-- Notifications
+if #removedHats > 0 then
+    game.StarterGui:SetCore("SendNotification", {
+        Title = "Formation Attached [✓]",
+        Text = #removedHats .. " blocks assembled forward of Torso.",
+        Duration = 5,
+        Icon = "rbxassetid://12561999923"
+    })
+end
+
+char.Humanoid:GetPropertyChangedSignal("Health"):Connect(function()
+	Parts_Folder:Destroy()
+end)
+
