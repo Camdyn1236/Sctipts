@@ -1,0 +1,330 @@
+"""
+ROBLOX Account Creator with Funcaptcha AI Solver — NoTrack
+Designed for Pydroid 3 on VR.
+Creates accounts with random passwords (9-14 chars).
+Uses AI endpoint to solve Funcaptcha.
+Auto-detects 'Next' (Arrow) and 'Finish' (Checkmark) buttons.
+Sends successful creations to Discord.
+"""
+
+import requests
+import random
+import string
+import time
+import json
+import os
+import subprocess
+import tempfile
+from colorama import Fore, Style, init
+from PIL import Image, ImageStat
+
+init()
+
+# ── CONFIG ──
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+AI_ENDPOINT = "https://little-shape-63d7.676767.workers.dev/"
+RETRIES_PER_CAPTCHA = 5  # Increased retries since detection is now dynamic
+
+# ── ROBLIX SIGN-UP BUTTON COORDINATES (Standard Android/VR Layout) ──
+# Adjust these if your "Sign Up" button varies significantly
+SIGNUP_BTN_X = 400
+SIGNUP_BTN_Y = 550
+
+# ── PASTE YOUR USERNAMES HERE (one per line) ──
+RAW_USERNAMES = """
+UsernameOne
+UsernameTwo
+UsernameThree
+"""
+
+# ── HELPERS ──
+
+def generate_password(length=11):
+    """Generate a random password with letters and numbers."""
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def take_screenshot():
+    """
+    Takes a full screenshot using Android's 'screencap' command.
+    Returns the path to the screenshot.
+    """
+    temp_path = os.path.join(tempfile.gettempdir(), "roblox_screenshot.png")
+    try:
+        # Run Android screencap
+        subprocess.run(["screencap", temp_path], check=True, timeout=5)
+        return temp_path
+    except Exception as e:
+        print(Fore.YELLOW + f"Screenshot Error: {e}" + Style.RESET_ALL)
+        return None
+
+def click_coordinates(x, y):
+    """
+    Simulates a click at (x, y) using Android's 'input tap' command.
+    """
+    try:
+        cmd = f"input tap {int(x)} {int(y)}"
+        subprocess.run(cmd, shell=True, check=True, timeout=2)
+        time.sleep(0.3)  # Small delay after click
+    except Exception as e:
+        print(Fore.YELLOW + f"Click Error: {e}" + Style.RESET_ALL)
+
+def send_to_discord(username, password):
+    """Send successful account creation to Discord."""
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    payload = {
+        "embeds": [{
+            "title": "🎉 New Account Created!",
+            "fields": [
+                {"name": "Username", "value": username, "inline": True},
+                {"name": "Password", "value": f"`{password}`", "inline": True}
+            ],
+            "color": 65280,  # Green
+            "footer": {"text": "NoTrack Creator"}
+        }]
+    }
+
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+        print(Fore.MAGENTA + f"Sent {username} to Discord!" + Style.RESET_ALL)
+    except Exception as e:
+        print(Fore.YELLOW + f"Discord Error: {e}" + Style.RESET_ALL)
+
+def find_next_arrow(img):
+    """
+    Finds the 'Next' Arrow (Chevron >) in the Funcaptcha.
+    The arrow is usually a dark gray/black triangle pointing right.
+    Returns (x, y) coordinates or None.
+    """
+    width, height = img.size
+    # Define a region of interest (ROI) where the arrow usually appears
+    # Typically on the right side of the image
+    roi_x1 = int(width * 0.6)
+    roi_y1 = int(height * 0.1)
+    roi_x2 = int(width * 0.95)
+    roi_y2 = int(height * 0.9)
+
+    roi = img.crop((roi_x1, roi_y1, roi_x2, roi_y2))
+    
+    # Convert to grayscale
+    roi_gray = roi.convert("L")
+    
+    # Threshold to find dark shapes (arrow is usually dark)
+    threshold = 80
+    for y in range(roi_gray.size[1]):
+        for x in range(roi_gray.size[0]):
+            pixel = roi_gray.getpixel((x, y))
+            if pixel < threshold:
+                # Found a dark pixel, expand to find center of the arrow
+                # Simple bounding box expansion
+                min_x, max_x = x, x
+                min_y, max_y = y, y
+                
+                # Expand right
+                while max_x < roi_gray.size[0] - 1 and roi_gray.getpixel((max_x + 1, y)) < threshold:
+                    max_x += 1
+                # Expand down
+                while max_y < roi_gray.size[1] - 1 and roi_gray.getpixel((x, max_y + 1)) < threshold:
+                    max_y += 1
+                
+                # Calculate center
+                center_x = (min_x + max_x) / 2
+                center_y = (min_y + max_y) / 2
+                
+                # Map back to full image coordinates
+                full_x = roi_x1 + center_x
+                full_y = roi_y1 + center_y
+                
+                # Filter out small noise
+                if (max_x - min_x) > 5 and (max_y - min_y) > 5:
+                    return (full_x, full_y)
+    
+    return None
+
+def find_finish_button(img):
+    """
+    Finds the 'Finish' Button (Green Checkmark or Text).
+    The finish button is usually green and located at the bottom right or center.
+    Returns (x, y) coordinates or None.
+    """
+    width, height = img.size
+    # ROI for finish button (usually bottom right)
+    roi_x1 = int(width * 0.5)
+    roi_y1 = int(height * 0.6)
+    roi_x2 = int(width * 0.95)
+    roi_y2 = int(height * 0.95)
+
+    roi = img.crop((roi_x1, roi_y1, roi_x2, roi_y2))
+    
+    # Look for green color (R < 100, G > 150, B < 100)
+    for y in range(roi.size[1]):
+        for x in range(roi.size[0]):
+            r, g, b = roi.getpixel((x, y))
+            if g > 150 and r < 100 and b < 100:
+                # Found green pixel, expand to find center
+                min_x, max_x = x, x
+                min_y, max_y = y, y
+                
+                # Expand
+                while max_x < roi.size[0] - 1:
+                    r2, g2, b2 = roi.getpixel((max_x + 1, y))
+                    if g2 > 150:
+                        max_x += 1
+                    else:
+                        break
+                
+                while max_y < roi.size[1] - 1:
+                    r2, g2, b2 = roi.getpixel((x, max_y + 1))
+                    if g2 > 150:
+                        max_y += 1
+                    else:
+                        break
+                
+                center_x = (min_x + max_x) / 2
+                center_y = (min_y + max_y) / 2
+                
+                full_x = roi_x1 + center_x
+                full_y = roi_y1 + center_y
+                
+                if (max_x - min_x) > 10 and (max_y - min_y) > 10:
+                    return (full_x, full_y)
+    
+    return None
+
+def solve_captcha_with_ai():
+    """
+    Takes a screenshot, sends to AI, and clicks Next/Finish based on response
+    AND auto-detected button positions.
+    Returns True if captcha is likely solved, False otherwise.
+    """
+    print(Fore.CYAN + "Taking screenshot for AI..." + Style.RESET_ALL)
+    img_path = take_screenshot()
+    if not img_path:
+        return False
+
+    img = Image.open(img_path)
+    
+    # Detect buttons
+    arrow_pos = find_next_arrow(img)
+    finish_pos = find_finish_button(img)
+    
+    if not arrow_pos:
+        print(Fore.YELLOW + "Warning: Next Arrow not found!" + Style.RESET_ALL)
+    if not finish_pos:
+        print(Fore.YELLOW + "Warning: Finish Button not found!" + Style.RESET_ALL)
+
+    # Send image to AI endpoint
+    try:
+        with open(img_path, "rb") as f:
+            files = {"image": ("roblox_screenshot.png", f, "image/png")}
+            response = requests.post(AI_ENDPOINT, files=files, timeout=10)
+            data = response.json()
+            
+            # Assume the AI returns {"response": "yes"} or {"response": "no"}
+            ai_response = data.get("response", "").lower()
+            
+            print(Fore.WHITE + f"AI Response: {ai_response}" + Style.RESET_ALL)
+            
+            if ai_response == "yes":
+                # Click Finish Button
+                if finish_pos:
+                    print(Fore.GREEN + f"AI says YES. Clicking Finish at {finish_pos}..." + Style.RESET_ALL)
+                    click_coordinates(finish_pos[0], finish_pos[1])
+                    time.sleep(1.5)
+                    return True
+                else:
+                    print(Fore.RED + "Finish button not detected!" + Style.RESET_ALL)
+                    return False
+            else:
+                # Click Arrow to go to next image
+                if arrow_pos:
+                    print(Fore.RED + f"AI says NO. Clicking Next at {arrow_pos}..." + Style.RESET_ALL)
+                    click_coordinates(arrow_pos[0], arrow_pos[1])
+                    time.sleep(1.5)
+                    return False
+                else:
+                    print(Fore.RED + "Next Arrow not detected!" + Style.RESET_ALL)
+                    return False
+    except Exception as e:
+        print(Fore.YELLOW + f"AI Request Error: {e}" + Style.RESET_ALL)
+        return False
+
+def create_account(username):
+    """
+    Attempts to create an account with the given username.
+    This assumes you are on the Roblox sign-up page.
+    """
+    password = generate_password(random.randint(9, 14))
+    
+    # Wait for user to be on the sign-up page
+    print(Fore.CYAN + f"Preparing to create account: {username} | {password}" + Style.RESET_ALL)
+    print(Fore.YELLOW + "Ensure you are on the Roblox Sign Up page and Username field is active." + Style.RESET_ALL)
+    time.sleep(3)
+
+    # 1. Enter Username
+    try:
+        # Use quotes to handle spaces/special chars in username
+        cmd = f'input text "{username}"'
+        subprocess.run(cmd, shell=True, check=True, timeout=2)
+        time.sleep(0.5)
+    except Exception as e:
+        print(Fore.YELLOW + f"Typing Username Error: {e}" + Style.RESET_ALL)
+
+    # 2. Click Password Field (Standard Roblox Layout)
+    # Adjust these coordinates if your password field is in a different spot
+    PASSWORD_FIELD_X = 400
+    PASSWORD_FIELD_Y = 350
+    click_coordinates(PASSWORD_FIELD_X, PASSWORD_FIELD_Y)
+    time.sleep(0.5)
+    
+    # 3. Enter Password
+    try:
+        cmd = f'input text "{password}"'
+        subprocess.run(cmd, shell=True, check=True, timeout=2)
+        time.sleep(0.5)
+    except Exception as e:
+        print(Fore.YELLOW + f"Typing Password Error: {e}" + Style.RESET_ALL)
+
+    # 4. Click "Sign Up" Button
+    print(Fore.WHITE + "Clicking Sign Up button..." + Style.RESET_ALL)
+    click_coordinates(SIGNUP_BTN_X, SIGNUP_BTN_Y)
+    time.sleep(2)
+
+    # 5. Handle Captcha
+    print(Fore.CYAN + "Handling Captcha..." + Style.RESET_ALL)
+    captcha_solved = False
+    
+    for attempt in range(RETRIES_PER_CAPTCHA):
+        if solve_captcha_with_ai():
+            captcha_solved = True
+            break
+        else:
+            # If AI said NO and clicked next, loop again to take new screenshot
+            continue
+
+    if captcha_solved:
+        # 6. Check if account was created (Simple heuristic: wait and check for success message or URL change)
+        # For now, we assume if captcha passed, account is created
+        print(Fore.GREEN + f"Account {username} likely created!" + Style.RESET_ALL)
+        send_to_discord(username, password)
+    else:
+        print(Fore.RED + f"Captcha failed for {username}" + Style.RESET_ALL)
+
+def main():
+    usernames = [u.strip() for u in RAW_USERNAMES.strip().split("\n") if u.strip()]
+    
+    if not usernames:
+        print(Fore.RED + "No usernames found!" + Style.RESET_ALL)
+        return
+
+    for username in usernames:
+        print(Fore.WHITE + f"Processing: {username}" + Style.RESET_ALL)
+        create_account(username)
+        time.sleep(2)  # Delay between accounts
+
+    print(Fore.CYAN + "All done!" + Style.RESET_ALL)
+
+if __name__ == "__main__":
+    main() 
